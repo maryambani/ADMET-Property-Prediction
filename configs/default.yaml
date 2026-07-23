@@ -1,0 +1,16 @@
+seed: 42
+
+data:
+  dataset: tox21
+  fingerprint_radius: 2
+  fingerprint_bits: 2048
+
+model:
+  hidden_dims: [512, 256]
+  dropout: 0.3
+
+training:
+  batch_size: 64
+  lr: 0.001
+  epochs: 50
+  val_split: 0.2
