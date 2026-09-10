@@ -15,6 +15,12 @@ class Tox21Dataset(Dataset):
         self.mask = torch.from_numpy(~np.isnan(y))
         self.y = torch.from_numpy(np.nan_to_num(y, nan=0.0))
 
+        tasks_file = data_dir / "tasks.txt"
+        if tasks_file.exists():
+            self.tasks = tasks_file.read_text().strip().split("\n")
+        else:
+            self.tasks = [f"task_{i}" for i in range(self.y.shape[1])]
+
     def __len__(self) -> int:
         return len(self.X)
 
