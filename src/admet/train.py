@@ -15,6 +15,23 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
 
 
+def build_hparams(config: dict, epochs: int | None = None) -> dict:
+    hparams = {
+        "seed": config["seed"],
+        "hidden_dims": config["model"]["hidden_dims"],
+        "dropout": config["model"]["dropout"],
+        "batch_size": config["training"]["batch_size"],
+        "lr": config["training"]["lr"],
+        "epochs": config["training"]["epochs"],
+        "val_split": config["training"]["val_split"],
+        "fingerprint_radius": config["data"]["fingerprint_radius"],
+        "fingerprint_bits": config["data"]["fingerprint_bits"],
+    }
+    if epochs is not None:
+        hparams["epochs"] = epochs
+    return hparams
+
+
 def make_loaders(dataset: Tox21Dataset, val_split: float, batch_size: int, seed: int):
     n_val = int(len(dataset) * val_split)
     n_train = len(dataset) - n_val
@@ -75,9 +92,30 @@ def train_one_epoch(model, loader, optimizer, device):
     return total_loss / max(total_n, 1)
 
 
-def train(config_path: str = "configs/default.yaml", epochs: int | None = None):
+def train(
+    config_path: str = "configs/default.yaml",
+    epochs: int | None = None,
+    use_wandb: bool | None = None,
+):
     config = load_config(config_path)
-    set_seed(config["seed"])
+    wandb_cfg = config.get("wandb", {})
+    if use_wandb is None:
+        use_wandb = wandb_cfg.get("enabled", False)
+
+    hparams = build_hparams(config, epochs)
+
+    run = None
+    if use_wandb:
+        import wandb
+
+        run = wandb.init(
+            project=wandb_cfg.get("project", "admet-tox21"),
+            config=hparams,
+        )
+        # during a sweep the agent overrides values, so read them back
+        hparams = dict(run.config)
+
+    set_seed(hparams["seed"])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}")
@@ -85,20 +123,20 @@ def train(config_path: str = "configs/default.yaml", epochs: int | None = None):
     dataset = Tox21Dataset()
     train_loader, val_loader, n_train, n_val = make_loaders(
         dataset,
-        val_split=config["training"]["val_split"],
-        batch_size=config["training"]["batch_size"],
-        seed=config["seed"],
+        val_split=hparams["val_split"],
+        batch_size=hparams["batch_size"],
+        seed=hparams["seed"],
     )
     print(f"train: {n_train}  val: {n_val}  tasks: {dataset.y.shape[1]}")
 
     model = build_model(
         input_dim=dataset.X.shape[1],
         n_tasks=dataset.y.shape[1],
-        config=config,
+        config={"model": {"hidden_dims": hparams["hidden_dims"], "dropout": hparams["dropout"]}},
     ).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=config["training"]["lr"])
+    optimizer = torch.optim.Adam(model.parameters(), lr=hparams["lr"])
 
-    n_epochs = epochs if epochs is not None else config["training"]["epochs"]
+    n_epochs = hparams["epochs"]
     out_dir = Path("checkpoints")
     out_dir.mkdir(exist_ok=True)
     best_auc = -1.0
@@ -106,18 +144,30 @@ def train(config_path: str = "configs/default.yaml", epochs: int | None = None):
 
     for epoch in range(1, n_epochs + 1):
         train_loss = train_one_epoch(model, train_loader, optimizer, device)
-        val_loss, mean_auc, _ = evaluate(model, val_loader, device)
+        val_loss, mean_auc, task_aucs = evaluate(model, val_loader, device)
         print(
             f"epoch {epoch:03d}/{n_epochs}  "
             f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  val_auc={mean_auc:.4f}"
         )
+
+        if run is not None:
+            metrics = {
+                "epoch": epoch,
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "val_auc": mean_auc,
+            }
+            for task_idx, auc in task_aucs.items():
+                metrics[f"val_auc/{dataset.tasks[task_idx]}"] = auc
+            run.log(metrics)
 
         if mean_auc > best_auc:
             best_auc = mean_auc
             torch.save(
                 {
                     "model_state": model.state_dict(),
-                    "config": config,
+                    "hparams": hparams,
+                    "tasks": dataset.tasks,
                     "val_auc": best_auc,
                     "epoch": epoch,
                 },
@@ -126,4 +176,9 @@ def train(config_path: str = "configs/default.yaml", epochs: int | None = None):
             print(f"  saved best -> {best_path} (auc={best_auc:.4f})")
 
     print(f"done. best val auc: {best_auc:.4f}")
+
+    if run is not None:
+        run.summary["best_val_auc"] = best_auc
+        run.finish()
+
     return best_path, best_auc
