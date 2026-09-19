@@ -14,3 +14,7 @@ training:
   lr: 0.001
   epochs: 50
   val_split: 0.2
+
+wandb:
+  enabled: false
+  project: admet-tox21
