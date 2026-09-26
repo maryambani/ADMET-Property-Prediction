@@ -23,7 +23,9 @@ def build_hparams(config: dict, epochs: int | None = None) -> dict:
         "batch_size": config["training"]["batch_size"],
         "lr": config["training"]["lr"],
         "epochs": config["training"]["epochs"],
+        "patience": config["training"]["patience"],
         "val_split": config["training"]["val_split"],
+        "test_split": config["training"]["test_split"],
         "fingerprint_radius": config["data"]["fingerprint_radius"],
         "fingerprint_bits": config["data"]["fingerprint_bits"],
     }
@@ -32,17 +34,42 @@ def build_hparams(config: dict, epochs: int | None = None) -> dict:
     return hparams
 
 
-def make_loaders(dataset: Tox21Dataset, val_split: float, batch_size: int, seed: int):
+def make_loaders(dataset, val_split: float, test_split: float, batch_size: int, seed: int):
     n_val = int(len(dataset) * val_split)
-    n_train = len(dataset) - n_val
-    train_ds, val_ds = random_split(
+    n_test = int(len(dataset) * test_split)
+    n_train = len(dataset) - n_val - n_test
+    train_ds, val_ds, test_ds = random_split(
         dataset,
-        [n_train, n_val],
+        [n_train, n_val, n_test],
         generator=torch.Generator().manual_seed(seed),
     )
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
-    return train_loader, val_loader, n_train, n_val
+    loaders = {
+        "train": DataLoader(train_ds, batch_size=batch_size, shuffle=True),
+        "val": DataLoader(val_ds, batch_size=batch_size, shuffle=False),
+        "test": DataLoader(test_ds, batch_size=batch_size, shuffle=False),
+    }
+    sizes = {"train": n_train, "val": n_val, "test": n_test}
+    return loaders, sizes
+
+
+class EarlyStopping:
+    # stop when the metric hasn't improved for `patience` epochs
+    def __init__(self, patience: int):
+        self.patience = patience
+        self.best = float("-inf")
+        self.bad_epochs = 0
+
+    def step(self, value: float) -> bool:
+        if value > self.best:
+            self.best = value
+            self.bad_epochs = 0
+            return True
+        self.bad_epochs += 1
+        return False
+
+    @property
+    def should_stop(self) -> bool:
+        return self.bad_epochs >= self.patience
 
 
 @torch.no_grad()
@@ -121,13 +148,17 @@ def train(
     print(f"device: {device}")
 
     dataset = Tox21Dataset()
-    train_loader, val_loader, n_train, n_val = make_loaders(
+    loaders, sizes = make_loaders(
         dataset,
         val_split=hparams["val_split"],
+        test_split=hparams["test_split"],
         batch_size=hparams["batch_size"],
         seed=hparams["seed"],
     )
-    print(f"train: {n_train}  val: {n_val}  tasks: {dataset.y.shape[1]}")
+    print(
+        f"train: {sizes['train']}  val: {sizes['val']}  test: {sizes['test']}  "
+        f"tasks: {dataset.y.shape[1]}"
+    )
 
     model = build_model(
         input_dim=dataset.X.shape[1],
@@ -139,12 +170,13 @@ def train(
     n_epochs = hparams["epochs"]
     out_dir = Path("checkpoints")
     out_dir.mkdir(exist_ok=True)
-    best_auc = -1.0
     best_path = out_dir / "best.pt"
+    stopper = EarlyStopping(patience=hparams["patience"])
+    best_epoch = 0
 
     for epoch in range(1, n_epochs + 1):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device)
-        val_loss, mean_auc, task_aucs = evaluate(model, val_loader, device)
+        train_loss = train_one_epoch(model, loaders["train"], optimizer, device)
+        val_loss, mean_auc, task_aucs = evaluate(model, loaders["val"], device)
         print(
             f"epoch {epoch:03d}/{n_epochs}  "
             f"train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  val_auc={mean_auc:.4f}"
@@ -161,24 +193,39 @@ def train(
                 metrics[f"val_auc/{dataset.tasks[task_idx]}"] = auc
             run.log(metrics)
 
-        if mean_auc > best_auc:
-            best_auc = mean_auc
+        if stopper.step(mean_auc):
+            best_epoch = epoch
             torch.save(
                 {
                     "model_state": model.state_dict(),
                     "hparams": hparams,
                     "tasks": dataset.tasks,
-                    "val_auc": best_auc,
+                    "val_auc": mean_auc,
                     "epoch": epoch,
                 },
                 best_path,
             )
-            print(f"  saved best -> {best_path} (auc={best_auc:.4f})")
+            print(f"  saved best -> {best_path} (auc={mean_auc:.4f})")
+        elif stopper.should_stop:
+            print(f"early stopping: no val improvement for {stopper.patience} epochs")
+            break
 
-    print(f"done. best val auc: {best_auc:.4f}")
+    # test set is evaluated once, with the weights that were best on val
+    ckpt = torch.load(best_path, map_location=device)
+    model.load_state_dict(ckpt["model_state"])
+    test_loss, test_auc, test_task_aucs = evaluate(model, loaders["test"], device)
+    ckpt["test_auc"] = test_auc
+    ckpt["test_task_aucs"] = {dataset.tasks[i]: a for i, a in test_task_aucs.items()}
+    torch.save(ckpt, best_path)
+
+    print(f"done. best epoch {best_epoch}  val auc {stopper.best:.4f}  test auc {test_auc:.4f}")
 
     if run is not None:
-        run.summary["best_val_auc"] = best_auc
+        run.summary["best_epoch"] = best_epoch
+        run.summary["best_val_auc"] = stopper.best
+        run.summary["test_auc"] = test_auc
+        for task, auc in ckpt["test_task_aucs"].items():
+            run.summary[f"test_auc/{task}"] = auc
         run.finish()
 
-    return best_path, best_auc
+    return best_path, test_auc
