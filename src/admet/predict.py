@@ -19,6 +19,7 @@ class Predictor:
         self.hparams = ckpt["hparams"]
         self.tasks = ckpt["tasks"]
         self.val_auc = ckpt.get("val_auc")
+        self.test_auc = ckpt.get("test_auc")
         self.epoch = ckpt.get("epoch")
 
         self.model = build_model(

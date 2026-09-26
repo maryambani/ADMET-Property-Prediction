@@ -106,9 +106,12 @@ with right:
 
 st.markdown(render_results_table(df), unsafe_allow_html=True)
 
+auc_note = f"val ROC-AUC {predictor.val_auc:.3f}"
+if predictor.test_auc is not None:
+    auc_note = f"held-out test ROC-AUC {predictor.test_auc:.3f}, " + auc_note
 st.caption(
     f"Feedforward net on 2048-bit Morgan fingerprints. "
-    f"Validation mean ROC-AUC {predictor.val_auc:.3f} (epoch {predictor.epoch}). "
+    f"Mean {auc_note} (best epoch {predictor.epoch}). "
     "Probabilities are raw sigmoid outputs, not calibrated confidence. "
     "Not for real safety decisions."
 )
