@@ -112,7 +112,7 @@ if predictor.test_auc is not None:
 st.caption(
     f"Feedforward net on 2048-bit Morgan fingerprints. "
     f"Mean {auc_note} (best epoch {predictor.epoch}). "
-    "Probabilities are raw sigmoid outputs, not calibrated confidence. "
+    "A 0.7 here is not a 70% chance of activity. These scores aren't calibrated. "
     "Not for real safety decisions."
 )
 

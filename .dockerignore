@@ -1,0 +1,14 @@
+.venv/
+.git/
+data/
+wandb/
+outputs/
+checkpoints/*
+!checkpoints/best.pt
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+scripts/
+configs/
+.DS_Store
