@@ -27,3 +27,20 @@ def test_predict_invalid_smiles_raises():
 def test_draw_molecule_returns_image():
     img = draw_molecule("CCO", size=(100, 100))
     assert img.size == (100, 100)
+
+
+def test_draw_molecule_with_highlights():
+    img = draw_molecule("c1ccccc1O", size=(100, 100), atom_scores={0: 1.0, 1: 0.2})
+    assert img.size == (100, 100)
+
+
+@needs_checkpoint
+def test_atom_contributions_are_positive():
+    predictor = Predictor()
+    smiles = "CC(=O)Oc1ccccc1C(=O)O"
+    found = False
+    for task in predictor.tasks:
+        scores = predictor.atom_contributions(smiles, task)
+        assert all(isinstance(atom, int) and score > 0 for atom, score in scores.items())
+        found = found or bool(scores)
+    assert found

@@ -21,11 +21,23 @@ def _get_generator(radius: int, n_bits: int):
     return _generators[key]
 
 
-def mol_to_fingerprint(mol, radius: int = 2, n_bits: int = 2048) -> np.ndarray:
+def fingerprint_and_bits(mol, radius: int = 2, n_bits: int = 2048):
+    # bitInfo maps an on-bit to the atoms that set it: (center atom, radius)
     gen = _get_generator(radius, n_bits)
-    fp = gen.GetFingerprint(mol)
+    ao = rdFingerprintGenerator.AdditionalOutput()
+    ao.AllocateBitInfoMap()
+    fp = gen.GetFingerprint(mol, additionalOutput=ao)
     arr = np.zeros((n_bits,), dtype=np.float32)
     Chem.DataStructs.ConvertToNumpyArray(fp, arr)
+    bits = {
+        int(bit): [(int(atom), int(rad)) for atom, rad in hits]
+        for bit, hits in ao.GetBitInfoMap().items()
+    }
+    return arr, bits
+
+
+def mol_to_fingerprint(mol, radius: int = 2, n_bits: int = 2048) -> np.ndarray:
+    arr, _ = fingerprint_and_bits(mol, radius=radius, n_bits=n_bits)
     return arr
 
 

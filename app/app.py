@@ -85,7 +85,6 @@ if not smiles:
     st.stop()
 
 try:
-    img = draw_molecule(smiles)
     probs = predictor.predict(smiles)
 except ValueError:
     st.error(f"could not parse SMILES: `{smiles}`")
@@ -97,7 +96,14 @@ df = df.sort_values("p(active)", ascending=False).reset_index(drop=True)
 
 left, right = st.columns([1, 2])
 with left:
+    assay = st.selectbox("explain this assay", df["assay"].tolist())
+    scores = predictor.atom_contributions(smiles, assay)
+    img = draw_molecule(smiles, atom_scores=scores)
     st.image(img, caption=smiles)
+    if scores:
+        st.caption("darker red atoms are the ones whose bits raised this score more")
+    else:
+        st.caption("no on-bits in this fingerprint raised this score")
     n_active = int((df["p(active)"] >= 0.5).sum())
     st.metric("assays flagged active", f"{n_active} / {len(df)}")
 
